@@ -1,0 +1,16 @@
+{
+  "spreadsheet_id": "ISI_ID_GOOGLE_SHEETS",
+  "sheet_name": "Form Responses 1",
+  "poll_seconds": 5,
+  "database": "data/live.sqlite3",
+  "output_dir": "output/live",
+  "columns": {
+    "timestamp": 0,
+    "name": 1,
+    "age": 2,
+    "screen_time": 3,
+    "apps": 4
+  },
+  "mode": "public_csv",
+  "gid": 0
+}
