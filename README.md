@@ -107,6 +107,10 @@ Snapshot respons lokal tidak dibagikan ke GitHub. Pengujian mencakup label asli 
 
 Struktur utama: `main.py` untuk CLI; `form_classifier/classification.py` untuk aturan; `sources.py` untuk Google Sheets; `storage.py` untuk database dan output.
 
+Sensor bridge Python → Max/MSP ada di [SENSOR_MAXMSP.md](SENSOR_MAXMSP.md). Jalankan `python3 main.py sensor --category HIGH` untuk menerima `/sensor/proximity`, `/sensor/touch`, dan `/sensor/held` di port 8001 lalu mengirim state, risk, mix, intensity, serta trigger audio ke Max di port 8000. Untuk hardware Arduino/ESP32 gunakan `--serial /dev/cu.usbmodemXXXX --baud 115200`. UI ponsel belum diperlukan.
+
+Aplikasi Android native untuk Samsung A51 ada di folder `android/`. Build dari Android Studio, masukkan IP komputer Python, lalu tekan `Connect sensor`. Aplikasi mengirim sensor proximity/touch langsung ke Python melalui OSC UDP; aplikasi tidak memuat atau memainkan audio.
+
 ## Lihat kategori per responden
 
 ```sh
@@ -115,3 +119,18 @@ python3 main.py report --row 2
 ```
 
 Tampilan hanya berisi baris, nama/inisial, jawaban durasi, dan LOW/MIDDLE/HIGH (atau REVIEW jika durasi tidak dikenal). Opsi lama `--detail` tetap diterima, tetapi menampilkan tabel sederhana yang sama. Hasil aktif JSON tidak lagi menyertakan kelompok umur atau jenis aplikasi. Riwayat database sebelumnya dipertahankan; polling pertama memperbarui format hasil lama tanpa menambah jumlah responden.
+
+## OSC ke Max/MSP
+
+Watcher mengirim kontrol OSC ke `127.0.0.1:8000` setiap ada respons baru atau baris yang berubah. Python hanya mengirim data klasifikasi: `/screen_time/category` (`Low`/`Middle`/`High`/`Review` untuk mengikuti route pada patch Max yang disediakan), `/screen_time/low`, `/screen_time/middle`, `/screen_time/high`, `/system/new_response 1`, dan `/system/response_count`.
+
+Atur `osc_enabled`, `max_host`, dan `max_port` di `config.json`. Di Max/MSP, gunakan `udpreceive 8000`, decoder OSC, lalu route alamat tersebut. Jika Max/MSP belum berjalan, klasifikasi Google Sheets tetap berjalan dan data tetap disimpan; pesan OSC akan dicoba lagi saat ada respons/perubahan berikutnya. Python tidak memuat atau memainkan audio.
+
+Untuk tes koneksi tanpa membaca Google Sheets:
+
+```sh
+python3 main.py osc-test
+```
+
+Max akan menerima urutan `Low`, `Middle`, `High`. Jalankan perintah ini setelah patch dibuka dan audio engine Max aktif.
+# python
