@@ -134,3 +134,4 @@ python3 main.py osc-test
 
 Max akan menerima urutan `Low`, `Middle`, `High`. Jalankan perintah ini setelah patch dibuka dan audio engine Max aktif.
 # python
+# python3
