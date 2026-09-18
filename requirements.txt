@@ -1,2 +1,4 @@
 google-api-python-client>=2.150,<3
 google-auth>=2.35,<3
+python-osc>=1.9,<2
+pyserial>=3.5,<4

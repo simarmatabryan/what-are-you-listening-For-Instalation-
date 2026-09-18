@@ -26,6 +26,11 @@ def read_config(path):
         raise ValueError('mode harus public_csv atau service_account')
     if config['mode'] == 'public_csv' and not str(config.get('gid', '')).isdigit():
         raise ValueError('gid tab Google Sheets harus berupa angka')
+    config.setdefault('max_host', '127.0.0.1')
+    config['max_port'] = int(config.get('max_port', 8000))
+    config['osc_enabled'] = bool(config.get('osc_enabled', True))
+    if not 1 <= config['max_port'] <= 65535:
+        raise ValueError('max_port harus 1..65535')
     columns = config.get('columns', DEFAULT_COLUMNS)
     if set(columns) != set(DEFAULT_COLUMNS) or any(type(v) is not int or v < 0 for v in columns.values()) or len(set(columns.values())) != 5:
         raise ValueError('columns harus berisi lima indeks kolom berbeda, mulai dari 0')

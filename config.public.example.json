@@ -2,6 +2,11 @@
   "spreadsheet_id": "ISI_ID_GOOGLE_SHEETS",
   "sheet_name": "Form Responses 1",
   "poll_seconds": 5,
+  "osc_enabled": true,
+  "max_host": "127.0.0.1",
+  "max_port": 8000,
+  "sensor_host": "127.0.0.1",
+  "sensor_port": 8001,
   "database": "data/live.sqlite3",
   "output_dir": "output/live",
   "columns": {

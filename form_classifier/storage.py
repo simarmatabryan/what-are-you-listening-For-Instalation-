@@ -42,6 +42,7 @@ class Database:
         if not rows or len(rows[0]) <= max(columns.values()):
             raise ValueError('Header Sheet kosong/kurang kolom; snapshot tidak diterapkan')
         counts = Counter(new=0, updated=0, removed=0, unchanged=0)
+        last_category = None
         current = set()
         with self.connection:
             for number, row in enumerate(rows[1:], start=2):
@@ -65,6 +66,7 @@ class Database:
                 self.connection.execute('INSERT INTO changes(source,row_number,kind,time,payload) VALUES(?,?,?,?,?)',
                                         (source, number, kind, now(), packed))
                 counts[kind] += 1
+                last_category = payload['category']
             active = self.connection.execute('SELECT row_number,payload FROM responses WHERE source=? AND active=1', (source,)).fetchall()
             for number, packed in active:
                 if number not in current:
@@ -72,7 +74,9 @@ class Database:
                     self.connection.execute('INSERT INTO changes(source,row_number,kind,time,payload) VALUES(?,?,?,?,?)',
                                             (source, number, 'removed', now(), packed))
                     counts['removed'] += 1
-        return dict(counts)
+        result = dict(counts)
+        result['last_category'] = last_category
+        return result
 
     def results(self, source):
         return [json.loads(row[0]) for row in self.connection.execute(

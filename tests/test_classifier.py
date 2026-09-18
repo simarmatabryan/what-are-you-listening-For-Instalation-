@@ -136,4 +136,36 @@ class SourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 PublicGoogleSheet({'spreadsheet_id':'abc','gid':1,'columns':DEFAULT_COLUMNS}).read()
 
+    def test_osc_category_contract(self):
+        from form_classifier.osc import MaxOSC
+        with patch('form_classifier.osc.SimpleUDPClient') as client_class:
+            client = client_class.return_value
+            sender = MaxOSC('127.0.0.1', 8000)
+            values = sender.send_category('HIGH', 30, new_response=True)
+            self.assertEqual(values['/screen_time/category'], 'High')
+            self.assertEqual(values['/screen_time/high'], 1)
+            self.assertEqual(values['/screen_time/low'], 0)
+            self.assertEqual(values['/system/new_response'], 1)
+            self.assertEqual(values['/system/response_count'], 30)
+            self.assertEqual(client.send_message.call_count, len(values))
+
+    def test_sensor_engine_risk_and_held_policy(self):
+        from form_classifier.sensor import SensorEngine
+        engine = SensorEngine('HIGH', seed=1)
+        engine.sensor_update(0.85, touch=True, now=10.0)
+        self.assertFalse(engine.held)
+        engine.sensor_update(0.85, touch=True, now=10.7)
+        self.assertTrue(engine.held)
+        self.assertEqual(engine.interaction, 'HELD')
+        self.assertEqual(engine.risk, 1.0)
+        self.assertEqual(engine.event_types(), ['notification', 'vibration', 'alarm'])
+        controls = engine.controls()
+        self.assertEqual(controls['/held'], 1)
+        self.assertGreater(controls['/news/negative_mix'], controls['/news/positive_mix'])
+
+    def test_serial_sensor_formats(self):
+        from form_classifier.hardware import SerialSensor
+        self.assertEqual(SerialSensor.parse('{"proximity": 0.7, "touch": 1, "held": 0}'), (0.7, True, False))
+        self.assertEqual(SerialSensor.parse('0.5,0,1'), (0.5, False, True))
+
 if __name__ == '__main__': unittest.main()
