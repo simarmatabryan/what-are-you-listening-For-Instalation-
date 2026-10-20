@@ -10,6 +10,7 @@ Alur utama:
 """
 
 import argparse
+import importlib.util
 import json
 import logging
 import subprocess
@@ -27,6 +28,37 @@ LOG = logging.getLogger("form-classifier")
 BASE_DIR = Path(__file__).resolve().parent
 MAX_PATCH = BASE_DIR / "Maxpatch" / "What are you listening_max.maxpat"
 VALID_SOUND_CATEGORIES = {"LOW", "MIDDLE", "HIGH"}
+
+
+def load_proximity_bridge_class():
+    """Load ProximityOSCBridge dari sensor.py yang satu folder dengan main.py."""
+    sensor_file = BASE_DIR / "sensor.py"
+
+    if not sensor_file.exists():
+        raise FileNotFoundError(
+            "sensor.py tidak ditemukan:\n"
+            f"{sensor_file}\n"
+            "Letakkan sensor.py di folder yang sama dengan main.py."
+        )
+
+    spec = importlib.util.spec_from_file_location(
+        "local_proximity_sensor",
+        sensor_file,
+    )
+
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Gagal memuat module sensor dari: {sensor_file}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    bridge_class = getattr(module, "ProximityOSCBridge", None)
+    if bridge_class is None:
+        raise ImportError(
+            "Class ProximityOSCBridge tidak ditemukan di sensor.py"
+        )
+
+    return bridge_class
 
 
 # ============================================================
@@ -67,7 +99,7 @@ def send_screen_time_state(host, port, state):
     STOP   -> /screen_time Stop
 
     Max:
-      [udpreceive 8000]
+      [udpreceive 8002]
               |
       [route /screen_time]
               |
@@ -240,7 +272,7 @@ def build_parser():
         help="Tes routing OSC Python -> Max/MSP",
     )
     osc_test.add_argument("--host", default="127.0.0.1")
-    osc_test.add_argument("--port", type=int, default=8000)
+    osc_test.add_argument("--port", type=int, default=8002)
     osc_test.add_argument(
         "--hold",
         type=float,
@@ -260,7 +292,7 @@ def build_parser():
     )
     sensor.add_argument("--config", default="config.json")
     sensor.add_argument("--max-host", default="127.0.0.1")
-    sensor.add_argument("--max-port", type=int, default=8000)
+    sensor.add_argument("--max-port", type=int, default=8002)
     sensor.add_argument("--sensor-host", default="0.0.0.0")
     sensor.add_argument("--sensor-port", type=int, default=8001)
     sensor.add_argument(
@@ -289,7 +321,7 @@ def build_parser():
     )
     sensor_test.add_argument("--config", default="config.json")
     sensor_test.add_argument("--max-host", default="127.0.0.1")
-    sensor_test.add_argument("--max-port", type=int, default=8000)
+    sensor_test.add_argument("--max-port", type=int, default=8002)
     sensor_test.add_argument(
         "--duration",
         type=float,
@@ -493,9 +525,18 @@ def handle_sensor_test(args):
 def handle_sensor(args):
     """Google Form -> Max/MSP, dikontrol proximity sensor dari HP Android.
 
-    Android mengirim OSC ke Python:
-      /proximity 0  -> NEAR  -> playback aktif
-      /proximity 5  -> FAR   -> playback berhenti / pause
+    Android mengirim OSC ke Python port 8001:
+      /proximity 0  -> NEAR
+      /proximity 5  -> FAR
+
+    Python meneruskan nilai yang sama ke Max/MSP port 8002:
+      /proximity 0  -> Max mendeteksi NEAR
+      /proximity 5  -> Max mendeteksi FAR
+
+    Mode final:
+      Google Form -> Max berjalan independen dari proximity.
+      NEAR/FAR hanya diteruskan ke Max sebagai /proximity.
+      Sensor HP tidak lagi memblokir queue Google Form.
 
     Mapping sound TIDAK berubah:
       LOW    -> Notification LOW saja
@@ -507,17 +548,23 @@ def handle_sensor(args):
     """
     import queue
     from pythonosc.udp_client import SimpleUDPClient
-    from pythonosc.dispatcher import Dispatcher
-    from pythonosc.osc_server import ThreadingOSCUDPServer
+    ProximityOSCBridge = load_proximity_bridge_class()
 
-    GAP_SECONDS = 5.0
+    GAP_SECONDS = 60.0
     NEAR_THRESHOLD = 1.0  # app Android: 0 = NEAR, 5 = FAR
 
     config = read_config(args.config)
 
     if not args.cached:
         LOG.info("Sinkronisasi awal Google Form...")
-        sync_form_once(config, log_summary=False)
+        try:
+            sync_form_once(config, log_summary=False)
+        except Exception as error:
+            LOG.warning(
+                "Sinkronisasi awal Google Form gagal (%s). "
+                "Mencoba classification.json tersimpan...",
+                error,
+            )
 
     report_data = load_report(config)
     responses = report_data.get("responses", [])
@@ -590,53 +637,35 @@ def handle_sensor(args):
 
     play_queue = queue.Queue()
     stop_event = threading.Event()
-    sensor_near = threading.Event()
     seen_responses = set()
 
     # ============================================================
-    # PROXIMITY OSC SERVER: HP -> PYTHON :8001
+    # PROXIMITY OSC SERVER: HP -> sensor.py :8001 -> MAX :8002
     # ============================================================
-    def on_proximity(address, *values):
-        if not values:
-            LOG.warning("PROXIMITY diterima tanpa nilai.")
-            return
+    def on_proximity_state(value, is_near):
+        """Status proximity dari sensor.py. Form playback tetap independen."""
+        LOG.info("")
+        LOG.info(
+            ">>> HP PROXIMITY = %s | raw=%.3f",
+            "NEAR" if is_near else "FAR",
+            value,
+        )
+        LOG.info(
+            ">>> MAX PROXIMITY = %s | /proximity %.3f",
+            "NEAR" if is_near else "FAR",
+            value,
+        )
+        LOG.info(">>> FORM PLAYBACK TETAP BERJALAN INDEPENDEN")
 
-        try:
-            value = float(values[0])
-        except (TypeError, ValueError):
-            LOG.warning("Nilai proximity tidak valid: %r", values[0])
-            return
-
-        is_near = value <= NEAR_THRESHOLD
-
-        if is_near:
-            if not sensor_near.is_set():
-                LOG.info("")
-                LOG.info(">>> HP PROXIMITY = NEAR | value=%s", value)
-                LOG.info(">>> PLAYBACK FORM AKTIF")
-            sensor_near.set()
-        else:
-            if sensor_near.is_set():
-                LOG.info("")
-                LOG.info(">>> HP PROXIMITY = FAR | value=%s", value)
-                LOG.info(">>> PLAYBACK FORM PAUSE")
-            sensor_near.clear()
-            send_stop()
-
-    dispatcher = Dispatcher()
-    dispatcher.map("/proximity", on_proximity)
-
-    sensor_server = ThreadingOSCUDPServer(
-        (args.sensor_host, args.sensor_port),
-        dispatcher,
+    proximity_bridge = ProximityOSCBridge(
+        sensor_host=args.sensor_host,
+        sensor_port=args.sensor_port,
+        max_host=args.max_host,
+        max_port=args.max_port,
+        near_threshold=NEAR_THRESHOLD,
+        on_state=on_proximity_state,
     )
-
-    sensor_server_thread = threading.Thread(
-        target=sensor_server.serve_forever,
-        name="android-proximity-osc",
-        daemon=True,
-    )
-    sensor_server_thread.start()
+    proximity_bridge.start()
 
     # Data awal sesuai urutan row Form.
     loop_rows = []
@@ -659,9 +688,14 @@ def handle_sensor(args):
     LOG.info("HP PROXIMITY + FORM -> MAX")
     LOG.info("======================================")
     LOG.info("RESPONDEN AWAL : %s", initial_count)
-    LOG.info("SENSOR OSC      : %s:%s", args.sensor_host, args.sensor_port)
-    LOG.info("ANDROID SEND    : /proximity 0 = NEAR | /proximity 5 = FAR")
-    LOG.info("STATUS AWAL     : MENUNGGU HP NEAR")
+    LOG.info("SENSOR.PY OSC   : %s:%s", args.sensor_host, args.sensor_port)
+    LOG.info("ANDROID -> PY   : /proximity 0 = NEAR | /proximity 5 = FAR")
+    LOG.info(
+        "PYTHON -> MAX   : /proximity 0..5 -> %s:%s",
+        args.max_host,
+        args.max_port,
+    )
+    LOG.info("STATUS FORM     : AKTIF LANGSUNG (tidak menunggu proximity HP)")
     LOG.info("JEDA RESPONDEN  : %.1f detik", GAP_SECONDS)
     LOG.info("LOW             : /screen_time Low -> Notification LOW saja")
     LOG.info("MIDDLE          : /screen_time Middle -> Notification + Vibration")
@@ -672,21 +706,10 @@ def handle_sensor(args):
 
     send_stop()
 
-    def wait_for_near():
-        while not stop_event.is_set():
-            if sensor_near.wait(timeout=0.20):
-                return True
-        return False
-
     def playback_worker():
         sequence_number = 0
 
         while not stop_event.is_set():
-
-            # Tidak mengambil responden berikutnya sampai HP mendeteksi NEAR.
-            if not wait_for_near():
-                break
-
             try:
                 row = play_queue.get(timeout=0.25)
             except queue.Empty:
@@ -696,10 +719,6 @@ def handle_sensor(args):
                 category = str(row.get("category", "")).strip().upper()
                 if category not in VALID_SOUND_CATEGORIES:
                     continue
-
-                # Jika berubah FAR tepat setelah row diambil, tunggu NEAR lagi.
-                if not wait_for_near():
-                    break
 
                 sequence_number += 1
 
@@ -714,37 +733,14 @@ def handle_sensor(args):
                     LOG.info("FORM ROW : %s", row_number)
                 LOG.info("CATEGORY : %s", category)
                 LOG.info("SOUND    : %s", sound_labels[category])
-                LOG.info("SENSOR   : NEAR")
+                LOG.info("FORM     : SEND LANGSUNG KE MAX")
                 LOG.info("======================================")
 
                 trigger_category(category)
 
-                # Responden harus mendapat 5 detik playback saat sensor NEAR.
-                # Jika HP menjadi FAR di tengah playback:
-                #   - audio langsung STOP
-                #   - responden yang sama menunggu NEAR
-                #   - saat NEAR lagi, kategori responden tersebut dipicu ulang.
-                active_started = time.monotonic()
-
-                while not stop_event.is_set():
-                    if not sensor_near.is_set():
-                        LOG.info("PLAY #%s PAUSE -> menunggu HP NEAR...", sequence_number)
-                        send_stop()
-
-                        if not wait_for_near():
-                            return
-
-                        LOG.info("HP NEAR lagi -> ulang trigger PLAY #%s", sequence_number)
-                        trigger_category(category)
-                        active_started = time.monotonic()
-
-                    elapsed = time.monotonic() - active_started
-                    if elapsed >= GAP_SECONDS:
-                        break
-
-                    stop_event.wait(0.05)
-
-                if stop_event.is_set():
+                # Pertahankan durasi existing: 60 detik per responden.
+                # Proximity HP tidak menghentikan atau memblokir timer ini.
+                if stop_event.wait(GAP_SECONDS):
                     break
 
                 send_stop()
@@ -752,7 +748,7 @@ def handle_sensor(args):
             finally:
                 play_queue.task_done()
 
-                # Sesudah responden terakhir langsung kembali PLAY #1.
+                # Sesudah responden terakhir kembali ke PLAY #1.
                 if play_queue.empty() and loop_rows and not stop_event.is_set():
                     LOG.info("")
                     LOG.info("======================================")
@@ -825,17 +821,13 @@ def handle_sensor(args):
 
     finally:
         stop_event.set()
-        sensor_near.set()  # lepas thread yang mungkin sedang menunggu
         send_stop()
 
-        sensor_server.shutdown()
-        sensor_server.server_close()
+        proximity_bridge.stop()
 
         playback_thread.join(timeout=2.0)
         refresh_thread.join(timeout=2.0)
-        sensor_server_thread.join(timeout=2.0)
-
-    return 0
+        return 0
 
 
 # ============================================================
